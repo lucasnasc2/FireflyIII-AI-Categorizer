@@ -1,8 +1,10 @@
 # Recognise placeholder payees instead of treating them as merchants
 
-> Ready to submit as the body of an issue or pull request against
-> [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer).
-> Copy it from this account or any other.
+> Submitted as [PR #8](https://github.com/ejagombar/FireflyIII-AI-Categorizer/pull/8)
+> against [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer)
+> from branch `fix/placeholder-payees` (commit `7a2c498`). If that pull request
+> is closed or goes stale, the text below still stands on its own — copy it from
+> this account or any other.
 
 
 Some banks never send a `destination_name`. Firefly III then stores the card

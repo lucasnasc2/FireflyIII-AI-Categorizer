@@ -1,7 +1,7 @@
 # Firefly III AI Categorizer
 
 > [!WARNING]
-> **This is a personal fork, published as-is and not maintained.** I built it to fix one specific problem in my own Firefly III data and I do not intend to keep it current. Dependencies age, and running unmaintained software is a security risk — the image tags here are frozen points in time, and `:latest` only ever means "latest from this fork". If you want software somebody is actually looking after, use [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer). The most useful thing you can do with this repository is push [its one change](#why-this-fork-exists) upstream, where it can be maintained properly; the write-up is ready to submit in [UPSTREAM.md](UPSTREAM.md).
+> **This is a personal fork, published as-is and not maintained.** I built it to fix specific problems in my own Firefly III data and I do not intend to keep it current. Dependencies age, and running unmaintained software is a security risk — the image tags here are frozen points in time, and `:latest` only ever means "latest from this fork". If you want software somebody is actually looking after, use [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer). The most useful thing you can do with this repository is push [the placeholder fix](#why-this-fork-exists) upstream — it is open as [PR #8](https://github.com/ejagombar/FireflyIII-AI-Categorizer/pull/8) — where it can be maintained properly; the write-up is ready to submit in [UPSTREAM.md](UPSTREAM.md).
 
 Automatically categorise transactions in [Firefly III](https://www.firefly-iii.org/) using an LLM — choose from OpenAI, Gemini, DeepSeek, or locally hosted. New withdrawals are classified into one of three outcomes and written back without any manual intervention. Process transactions automatically using a Firefly III webhook, or use the web interface to mass categorize transactions.
 
@@ -36,6 +36,7 @@ This fork makes the placeholder check generic, so no bank-specific rules are inv
 | History key | the placeholder, for this bank | the transaction description (what upstream already does for nameless payees) |
 | Prompt input | the raw line, printed twice, once as the "destination" | the raw line once, plus a note that the payee was not recorded and the merchant has to be read from the description |
 | Destination matching | placeholder accounts offered as candidates and re-applied from history | placeholders filtered out, in both directions |
+| Repeat purchases | still a model call, because every description differs | optional `MERCHANT_LOOKUP_ENABLED=true`: the model names the merchant once, the name is remembered, repeats classify from history |
 | Checking a build | not possible without writing to your books | `DRY_RUN=true` classifies, logs, writes nothing |
 | Diagnostics | none | `tools/audit.py`, `tools/dryrun.py` |
 | CI | publish only | `go vet` + `go test` gate the publish |
@@ -73,8 +74,8 @@ Treat it accordingly: well tested against *my* data, lightly tested against anyt
 - **Not maintained.** No dependency work beyond the automation below, no support, and no promise that a Firefly III or provider API change will not break it.
 - [Dependabot](.github/dependabot.yml) watches Go modules, GitHub Actions and the Docker base images, so stale dependencies at least become visible as pull requests. Merging one is a click; nothing obliges anybody to make it.
 - This app has **no authentication** — see the warning at the top of Getting started. Do not expose it to the internet.
-- AGPL-3.0, like upstream. The source for every image published here is this repository at the matching tag (`git checkout v1.0.0` for `:1.0.0`).
-- Pin a release tag rather than following `:latest`: `latest` is only rebuilt when this fork's `main` moves, which it will not.
+- AGPL-3.0, like upstream. The source for every image published here is this repository at the matching tag (`git checkout v2.0.0` for `:2.0.0`).
+- Pin a release tag rather than following `:latest`: `latest` is rebuilt on every push to this fork's `main`, so it moves whenever anything is touched here. See **Updating** in Getting started for the pull-then-restart pair.
 
 ## Upstreaming
 
@@ -84,7 +85,7 @@ Treat it accordingly: well tested against *my* data, lightly tested against anyt
 
 ## Features
 
-The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer) forked that one and rewrote it from scratch with a new UI and additional features. [This fork](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) fixes [history grouped on placeholder payees](#why-this-fork-exists) on top of that and is otherwise the same:
+The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer) forked that one and rewrote it from scratch with a new UI and additional features. [This fork](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) fixes [history grouped on placeholder payees](#why-this-fork-exists) on top of that, adds an opt-in [merchant-learning](#learned-merchant-names-opt-in) step plus the tooling to check a build, and is otherwise the same:
 
 - **Web UI.** A built-in dashboard, styled to match Firefly III's AdminLTE theme with light and dark mode support, provides real-time job monitoring, a transactions browser with manual re-categorisation, a category viewer, a review page for AI decisions, and a full settings page.
 - **Multiple AI providers.** Supports OpenAI (and any OpenAI-compatible endpoint such as Ollama or Azure OpenAI), Google Gemini, and DeepSeek — switchable from the settings page.
@@ -114,17 +115,22 @@ services:
   categorizer:
     image: ghcr.io/lucasnasc2/fireflyiii-ai-categorizer:latest
     restart: unless-stopped
+    env_file: .env              # Firefly III URL/token and AI keys; see .env.example
     ports:
       - "3000:3000"
     volumes:
-      - ./categorizer-data:/data
+      - ./categorizer-data:/data   # required: keeps the settings you save in the UI
 ```
+
+Without the `/data` volume every setting you save is lost the next time the container is recreated.
 
 ```bash
 docker compose up -d
 ```
 
-Images are published to the [GitHub Container Registry](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer/pkgs/container/fireflyiii-ai-categorizer) for `linux/amd64` and `linux/arm64`, tagged `latest`, the release version (`1.0.0`, `1.0`), and the commit (`sha-abcdef0`). Pin a release tag in the snippet above if you would rather not track `latest`.
+Images are published to the [GitHub Container Registry](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer/pkgs/container/fireflyiii-ai-categorizer) for `linux/amd64` and `linux/arm64`, tagged `latest`, the release version (`2.0.0`, `2.0`), and the commit (`sha-abcdef0`). `latest` follows this fork's `main`; pin a release tag in the snippet above if you would rather not track it.
+
+**Updating:** `docker compose pull && docker compose up -d` — the pull is what fetches a newer image, the `up -d` recreates the container with it. For the first batch after an update, add `DRY_RUN=true` to the environment so the decisions are logged instead of written to your books.
 
 Then open **http://localhost:3000** — you will be taken directly to the Settings page.
 
