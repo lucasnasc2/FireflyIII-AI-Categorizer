@@ -1,0 +1,21 @@
+# Version control and CI metadata — not part of the build
+.git
+.github
+
+# Local runtime state (bind-mount target of the dev compose harness)
+data
+
+# Local secrets — never bake these into the build context
+.env
+.env.*
+
+# Compose files and docs: needed to run the image, not to build it
+docker-compose.yml
+compose.yaml
+*.md
+
+# Development-only tooling (audit/dry-run scripts are run from the host)
+tools
+.idea
+node_modules
+__pycache__

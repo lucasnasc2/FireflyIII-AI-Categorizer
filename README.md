@@ -13,7 +13,7 @@ Automatically categorise transactions in [Firefly III](https://www.firefly-iii.o
 
 ## Features
 
-The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. This project is a fork of that fork, rewritten from scratch with a new UI and additional features:
+The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. This project is maintained at [lucasnasc2/FireflyIII-AI-Categorizer](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) — a fork of that fork — and was rewritten from scratch with a new UI and additional features:
 
 - **Web UI.** A built-in dashboard, styled to match Firefly III's AdminLTE theme with light and dark mode support, provides real-time job monitoring, a transactions browser with manual re-categorisation, a category viewer, a review page for AI decisions, and a full settings page.
 - **Multiple AI providers.** Supports OpenAI (and any OpenAI-compatible endpoint such as Ollama or Azure OpenAI), Google Gemini, and DeepSeek — switchable from the settings page.
@@ -41,7 +41,7 @@ The recommended way is Docker Compose with a volume mount so settings survive co
 ```yaml
 services:
   categorizer:
-    image: ghcr.io/ejagombar/fireflyiii-ai-categorizer:latest
+    image: ghcr.io/lucasnasc2/fireflyiii-ai-categorizer:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -52,6 +52,8 @@ services:
 ```bash
 docker compose up -d
 ```
+
+Images are published to the [GitHub Container Registry](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer/pkgs/container/fireflyiii-ai-categorizer) for `linux/amd64` and `linux/arm64`, tagged `latest`, the release version (`1.0.0`, `1.0`), and the commit (`sha-abcdef0`). Pin a release tag in the snippet above if you would rather not track `latest`.
 
 Then open **http://localhost:3000** — you will be taken directly to the Settings page.
 
