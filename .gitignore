@@ -1,1 +1,13 @@
 config.json
+
+# Local secrets (never commit an .env with real tokens)
+.env
+
+# Bind-mount target of the local docker-compose harness
+data/*
+!data/.gitkeep
+
+# Editor / tooling noise
+.idea
+node_modules
+__pycache__/

@@ -39,6 +39,11 @@ type Config struct {
 
 	WorkerConcurrency int
 	BatchConcurrency  int
+
+	// DryRun makes the pipeline log every classification instead of writing it
+	// back to Firefly III. Env-only (never persisted), default false, so a
+	// production rollout behaves exactly like the upstream image.
+	DryRun bool
 }
 
 // Load reads config from environment variables and overlays the config file.
@@ -65,6 +70,7 @@ func Load() (*Config, *Store, error) {
 		DestinationMatchEnabled: getEnv("DESTINATION_MATCH_ENABLED", "false") == "true",
 		WorkerConcurrency:       getEnvInt("WORKER_CONCURRENCY", 1),
 		BatchConcurrency:        getEnvInt("BATCH_CONCURRENCY", 5),
+		DryRun:                  getEnv("DRY_RUN", "false") == "true",
 	}
 
 	ttlStr := getEnv("HISTORY_CACHE_TTL", "10m")
@@ -102,8 +108,13 @@ func ApplyStored(cfg *Config, sc StoredConfig) {
 	if sc.OpenAIModel != "" {
 		cfg.OpenAIModel = sc.OpenAIModel
 	}
-	// OpenAIBaseURL can legitimately be empty; only apply if stored
-	cfg.OpenAIBaseURL = sc.OpenAIBaseURL
+	// A base URL stored through the UI wins, but an empty stored value must not
+	// discard OPENAI_BASE_URL from the environment: that variable is how Ollama
+	// and Azure users point the app at their endpoint, and on a fresh install
+	// there is no stored config at all.
+	if sc.OpenAIBaseURL != "" {
+		cfg.OpenAIBaseURL = sc.OpenAIBaseURL
+	}
 	if sc.GeminiKey != "" {
 		cfg.GeminiKey = sc.GeminiKey
 	}

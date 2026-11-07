@@ -237,6 +237,68 @@ All variables are optional. When they are absent, the server starts normally and
 | `HISTORY_CONTEXT_LIMIT` | `5` | Past transactions sent to the model as context examples |
 | `HISTORY_LOOKBACK_DAYS` | `90` | How far back to search for history examples |
 | `HISTORY_CACHE_TTL` | `10m` | How long to cache the history lookup |
+| `DRY_RUN` | `false` | Classify as usual but never write to Firefly III — every decision is logged instead. Use it to validate a new build against production data before letting it write. |
+
+---
+
+## Merchant parsing
+
+Banks rarely fill in a usable payee. A Spanish card purchase looks like this:
+
+```
+COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+```
+
+Firefly III stores that whole line as the description and leaves `destination_name` empty or set to a placeholder such as `(unknown destination)`. Feeding the raw line to the model wastes tokens (the card mask and the duplicated date are pure noise) and, worse, grouping history on the placeholder makes every unrelated merchant look like the same vendor.
+
+Before the model is called, the description is reduced to a merchant name plus a payment method:
+
+| Description | Merchant | Method |
+|---|---|---|
+| `COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12` | `AZAHAR NOCHE` | card |
+| `COMPRA BIZUM VENTA BILLETES RENFE 2026-08-25 PEDIDO 000457060982` | `VENTA BILLETES RENFE` | bizum |
+| `TRANSFERENCIA A FAVOR DE LA CUEVA DEL BARBERO CONCEPTO: FACTURA 12` | `LA CUEVA DEL BARBERO` | transfer |
+| `COMPRA EN WWW.AMAZON*WB1R672N5, CON LA TARJETA : ...` | `AMAZON` | card |
+| `LA CUEVA DEL BARBERO` | `LA CUEVA DEL BARBERO` | — |
+
+The same merchant name is used as the key when looking up past classifications, so history stays attached to a vendor instead of to a placeholder. When Firefly III already holds a real payee, that payee is kept.
+
+Two commands check the parser:
+
+```bash
+# Summary of the categorizer's output: unknown-payee rate, AI tags, categories
+python3 tools/audit.py summary --months 6
+
+# Run the parser over your own descriptions
+python3 tools/audit.py descriptions --months 6 | go run ./tools/parsedump
+```
+
+Both are read-only (GET requests only), so they are safe to run against a live instance.
+
+### Validating a build with `DRY_RUN`
+
+`DRY_RUN=true` runs the full decision path and logs every outcome without touching Firefly III. Pair it with `tools/dryrun.py`, which finds the transactions most likely to expose a payee-grouping bug and can stand in for the AI provider:
+
+```bash
+# 1. Stub OpenAI-compatible endpoint: answers with a fixed category and
+#    records every prompt it receives (default /tmp/stub-prompts.log)
+python3 tools/dryrun.py stub &
+
+# 2. Start the app against the stub, with writes disabled
+docker compose run --rm -e DRY_RUN=true \
+  -e OPENAI_BASE_URL=http://127.0.0.1:18080/v1 server
+
+# 3. Journal ids whose payee is still a placeholder -- these are the ones that
+#    used to be grouped together under "(unknown destination)"
+python3 tools/dryrun.py ids
+
+# 4. Classify them, then confirm nothing changed in Firefly III
+curl -X POST localhost:3000/batch/run -H 'Content-Type: application/json' \
+  -d '{"filter":{"transaction_ids":["528","527"]},"force":true}'
+python3 tools/dryrun.py show 528
+```
+
+Read `/tmp/stub-prompts.log` to see the exact prompt the model would have received; `docker compose logs` shows the `dry-run: skipping transaction update` lines with the decision that would have been written.
 
 ---
 

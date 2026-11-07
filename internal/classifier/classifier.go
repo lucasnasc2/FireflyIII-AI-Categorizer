@@ -24,21 +24,57 @@ type HistoricalEntry struct {
 }
 
 // GroupKey returns the field to use when grouping and looking up transaction
-// history. When destination_name is absent or a generic placeholder, description
-// is used instead so that past context is still surfaced for nameless payees.
+// history. A real destination name wins, because that is the payee the user or
+// Firefly III already agreed on. When destination_name is absent or a generic
+// placeholder, the merchant is parsed out of the bank description instead —
+// Spanish banks such as Openbank never populate destination_name and put the
+// whole transaction into the description. Only when neither yields anything is
+// the raw description used, so past context is still surfaced.
 func GroupKey(destinationName, description string) string {
-	if isBlankName(destinationName) {
-		return description
+	if !isBlankName(destinationName) {
+		return strings.TrimSpace(destinationName)
 	}
-	return destinationName
+	if key := ParseDescription(description).Key(); key != "" {
+		return key
+	}
+	return strings.TrimSpace(description)
+}
+
+// blankNames are the placeholder payee names Firefly III and the various bank
+// importers use when no real merchant is known. Grouping on any of these
+// collapses unrelated payees into a single bucket of poisoned "history", so
+// they must never be treated as a merchant.
+var blankNames = map[string]bool{
+	"":                      true,
+	"-":                     true,
+	"--":                    true,
+	"no name":               true,
+	"(no name)":             true,
+	"unknown":               true,
+	"n/a":                   true,
+	"n.a.":                  true,
+	"unknown payee":         true,
+	"(unknown payee)":       true,
+	"(no payee)":            true,
+	"(unknown destination)": true,
+	"unknown destination":   true,
+	"pos purchase":          true,
+	"pos purchase (card)":   true,
+	"card purchase":         true,
+	"purchase":              true,
+	"transfer":              true,
+	"(transfer)":            true,
+	"no registrado":         true,
+	"(no registrado)":       true,
 }
 
 func isBlankName(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "no name", "(no name)", "unknown", "n/a":
+	norm := strings.ToLower(strings.TrimSpace(s))
+	if blankNames[norm] {
 		return true
 	}
-	return false
+	// Catch decorated variants such as "(unknown destination) #12".
+	return strings.Contains(norm, "unknown destination")
 }
 
 // Category is a classifiable Firefly III category with optional notes that
@@ -67,6 +103,13 @@ type Request struct {
 	Description     string
 	Amount          *float64
 	History         []HistoricalEntry
+
+	// Merchant and Method optionally carry an already-parsed merchant name and
+	// payment method. When empty, buildUserPrompt derives them from
+	// Description via ParseDescription, so callers that only have the raw
+	// description (e.g. the webhook path) need not do the work themselves.
+	Merchant string
+	Method   string
 
 	// ExpenseAccounts is set when destination-account matching is enabled.
 	ExpenseAccounts []AccountCandidate

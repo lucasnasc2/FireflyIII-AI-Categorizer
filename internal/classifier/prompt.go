@@ -131,40 +131,65 @@ func BuildSystemPrompt(customContext string, destinationMatching bool) string {
 func buildUserPrompt(req Request) string {
 	var sb strings.Builder
 
+	info := ParseDescription(req.Description)
+	merchant := strings.TrimSpace(req.Merchant)
+	if merchant == "" {
+		merchant = info.Merchant
+	}
+	method := strings.TrimSpace(req.Method)
+	if method == "" && info.Method != MethodUnknown {
+		method = string(info.Method)
+	}
+
 	if len(req.History) > 0 {
 		gk := GroupKey(req.DestinationName, req.Description)
 		fmt.Fprintf(&sb, "Past classifications for %q:\n", gk)
 		for _, h := range req.History {
-			fmt.Fprintf(&sb, "  - %q → %s\n", h.Description, h.CategoryName)
+			fmt.Fprintf(&sb, "  - %q → %s\n", Redact(h.Description), h.CategoryName)
 		}
 		sb.WriteString("\n")
 	}
 
-	if len(req.ExpenseAccounts) > 0 {
+	if accounts := formatAccounts(req.ExpenseAccounts); accounts != "" {
 		sb.WriteString("Existing expense accounts:\n")
-		for _, a := range req.ExpenseAccounts {
-			// Skip placeholder accounts like "(no name)".
-			if isBlankName(a.Name) {
-				continue
-			}
-			fmt.Fprintf(&sb, "  - %s\n", a.Name)
-		}
+		sb.WriteString(accounts)
 		sb.WriteString("\n")
 	}
 
 	fmt.Fprintf(&sb, "Available categories:%s\n\n", formatCategories(req.Categories))
+
 	sb.WriteString("Transaction to classify:\n")
-	// When destination is a blank placeholder, show description instead
-	// so the LLM still has useful context.
-	dest := req.DestinationName
-	if isBlankName(dest) && req.Description != "" {
-		dest = req.Description
+	if merchant != "" {
+		fmt.Fprintf(&sb, "  Merchant: %s\n", merchant)
+	} else {
+		sb.WriteString("  Merchant: unknown — the bank's system did not record a payee\n")
 	}
-	fmt.Fprintf(&sb, "  Destination: %s\n", dest)
-	fmt.Fprintf(&sb, "  Description: %s\n", req.Description)
+	if method != "" {
+		fmt.Fprintf(&sb, "  Payment method: %s\n", method)
+	}
+	fmt.Fprintf(&sb, "  Bank description: %s\n", Redact(req.Description))
 	if req.Amount != nil {
 		fmt.Fprintf(&sb, "  Amount: %.2f\n", *req.Amount)
 	}
+	// Only surface the Firefly payee when it adds information the merchant does
+	// not already carry (typically a payee the user corrected by hand).
+	if name := strings.TrimSpace(req.DestinationName); !isBlankName(name) && !strings.EqualFold(name, merchant) {
+		fmt.Fprintf(&sb, "  Payee in Firefly III: %s\n", name)
+	}
 
+	return sb.String()
+}
+
+// formatAccounts renders the usable expense accounts as a list, skipping
+// placeholder accounts such as "(unknown destination)". Offering a placeholder
+// to the model invites it to MATCH unrelated merchants onto one fake account.
+func formatAccounts(accounts []AccountCandidate) string {
+	var sb strings.Builder
+	for _, a := range accounts {
+		if !IsUsableAccountName(a.Name) {
+			continue
+		}
+		fmt.Fprintf(&sb, "  - %s\n", a.Name)
+	}
 	return sb.String()
 }

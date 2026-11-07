@@ -1,0 +1,45 @@
+# Isolated local test harness for the AI categorizer.
+#
+# This file is intentionally self-contained: it defines its own project name,
+# its own network and its own container names so it cannot collide with the
+# parent Firefly III stack in the directory above.
+#
+# The categorizer reaches Firefly III over HTTPS using FIREFLY_URL +
+# FIREFLY_PERSONAL_TOKEN from .env -- no shared docker network is required.
+
+name: firefly-aicat
+
+services:
+  categorizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: firefly-aicat-categorizer:dev
+    container_name: aicat-categorizer
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Loopback only: nothing is exposed to the LAN or to any reverse proxy.
+      - "127.0.0.1:13000:3000"
+    networks:
+      - aicat
+    healthcheck:
+      # Plain HTTP check on the listening port -- does not depend on ENABLE_UI.
+      # The alpine runtime image ships BusyBox wget but no node, so wget it is.
+      test:
+        - "CMD"
+        - "wget"
+        - "-q"
+        - "-O"
+        - "/dev/null"
+        - "http://127.0.0.1:3000/health"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  aicat:
+    name: firefly-aicat-net
+    driver: bridge

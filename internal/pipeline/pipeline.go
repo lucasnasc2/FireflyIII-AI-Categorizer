@@ -42,6 +42,10 @@ type Pipeline struct {
 
 	destinationMatch bool
 
+	// dryRun logs each classification but never writes to Firefly III. Used to
+	// validate a new build against real production data without mutating it.
+	dryRun bool
+
 	// Short-lived category cache to avoid re-fetching on every job in a batch.
 	catMu      sync.RWMutex
 	catCache   []firefly.Category
@@ -60,6 +64,7 @@ func New(
 	reg *job.Registry,
 	contextN int,
 	destinationMatch bool,
+	dryRun bool,
 ) *Pipeline {
 	return &Pipeline{
 		firefly:          fc,
@@ -68,6 +73,7 @@ func New(
 		registry:         reg,
 		contextN:         contextN,
 		destinationMatch: destinationMatch,
+		dryRun:           dryRun,
 	}
 }
 
@@ -116,9 +122,15 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 			slog.Warn("failed to fetch expense accounts, continuing without destination matching", "error", err)
 		}
 	}
-	clAccounts := make([]classifier.AccountCandidate, len(expenseAccounts))
-	for i, a := range expenseAccounts {
-		clAccounts[i] = classifier.AccountCandidate{ID: a.ID, Name: a.Name}
+	clAccounts := make([]classifier.AccountCandidate, 0, len(expenseAccounts))
+	for _, a := range expenseAccounts {
+		// Placeholder payees such as "(unknown destination)" are not real
+		// merchants. Passing them to the model invites it to MATCH unrelated
+		// withdrawals onto that single fake account.
+		if !classifier.IsUsableAccountName(a.Name) {
+			continue
+		}
+		clAccounts = append(clAccounts, classifier.AccountCandidate{ID: a.ID, Name: a.Name})
 	}
 
 	gkey := classifier.GroupKey(j.DestinationName, j.Description)
@@ -141,10 +153,13 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 	if historyMatchDestID != "" {
 		found := false
 		for _, a := range expenseAccounts {
-			if a.ID == historyMatchDestID {
-				found = true
-				break
+			if a.ID != historyMatchDestID {
+				continue
 			}
+			// Never re-apply a placeholder payee: doing so would keep
+			// collapsing unrelated merchants onto the same fake account.
+			found = classifier.IsUsableAccountName(a.Name)
+			break
 		}
 		if !found {
 			historyMatchDestID = ""
@@ -173,7 +188,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		if historyMatchDestID != "" {
 			outcome.DestConfidence = "CLASSIFIED"
 		}
-		if err := p.firefly.UpdateTransaction(ctx, txn, outcome); err != nil {
+		if err := p.applyUpdate(ctx, transactionID, txn, outcome); err != nil {
 			p.registry.SetFailed(j.ID, err.Error())
 			return fmt.Errorf("update transaction: %w", err)
 		}
@@ -288,6 +303,12 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 				destAction = ""
 				break
 			}
+			if p.dryRun {
+				slog.Info("dry-run: skipping expense account creation", "name", result.Destination.Name)
+				destAccount = ""
+				destAction = ""
+				break
+			}
 			created, err := p.firefly.CreateExpenseAccount(ctx, result.Destination.Name)
 			if err != nil {
 				slog.Error("failed to create expense account", "name", result.Destination.Name, "error", err)
@@ -321,7 +342,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		}
 	}
 
-	if err := p.firefly.UpdateTransaction(ctx, txn, outcome); err != nil {
+	if err := p.applyUpdate(ctx, transactionID, txn, outcome); err != nil {
 		p.registry.SetFailed(j.ID, err.Error())
 		return fmt.Errorf("update transaction: %w", err)
 	}
@@ -450,6 +471,26 @@ func tryDestinationHistoryMatch(history []classifier.HistoricalEntry, amount *fl
 		}
 	}
 	return best, bestCount
+}
+
+// applyUpdate writes the classification back to Firefly III. In dry-run mode it
+// only logs what would have been written, so a new build can be validated
+// against real data without mutating it.
+func (p *Pipeline) applyUpdate(ctx context.Context, transactionID string, txn firefly.Transaction, outcome firefly.UpdateOutcome) error {
+	if p.dryRun {
+		slog.Info("dry-run: skipping transaction update",
+			"id", transactionID,
+			"outcome", outcome.Outcome,
+			"category", outcome.Category,
+			"category_id", outcome.CategoryID,
+			"destination_id", outcome.DestinationID,
+			"dest_confidence", outcome.DestConfidence,
+			"reason", outcome.Reason,
+			"assumption", outcome.Assumption,
+		)
+		return nil
+	}
+	return p.firefly.UpdateTransaction(ctx, txn, outcome)
 }
 
 func derefAmount(a *float64) float64 {
