@@ -1,5 +1,8 @@
 # Firefly III AI Categorizer
 
+> [!WARNING]
+> **This is a personal fork, published as-is and not maintained.** I built it to fix one specific problem in my own Firefly III data and I do not intend to keep it current. Dependencies age, and running unmaintained software is a security risk — the image tags here are frozen points in time, and `:latest` only ever means "latest from this fork". If you want software somebody is actually looking after, use [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer). The most useful thing you can do with this repository is push [its one change](#why-this-fork-exists) upstream, where it can be maintained properly; the write-up is ready to submit in [UPSTREAM.md](UPSTREAM.md).
+
 Automatically categorise transactions in [Firefly III](https://www.firefly-iii.org/) using an LLM — choose from OpenAI, Gemini, DeepSeek, or locally hosted. New withdrawals are classified into one of three outcomes and written back without any manual intervention. Process transactions automatically using a Firefly III webhook, or use the web interface to mass categorize transactions.
 
 <img width="100%" alt="Jobs page" src="public/docs/images/jobs_page.webp" />
@@ -11,9 +14,66 @@ Automatically categorise transactions in [Firefly III](https://www.firefly-iii.o
 
 ---
 
+## Why this fork exists
+
+My bank — Openbank, in Spain — never fills in Firefly III's `destination_name`. Every card purchase arrives like this, with the payee set to the literal placeholder `(unknown destination)`:
+
+```
+COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+```
+
+Upstream uses the payee as the key when it looks up similar past transactions to send the model as few-shot examples. With every withdrawal keyed on the same placeholder, those examples stop being "what we did last time at this shop" and become "what we did last time at *any* shop", so the category decided once for a bar comes back as precedent for a train ticket. The raw line also reaches the model verbatim, card mask, duplicated date and all.
+
+Measured on my account before the fix: **50.7 % of September and 89.5 % of October withdrawals carried a placeholder payee.** In practice the categoriser was guessing, and the history made the guess look deliberate.
+
+This fork parses the merchant out of the description and keys history on that instead:
+
+| | Upstream | This fork |
+|---|---|---|
+| History key | raw `destination_name`, empty or placeholder for this bank | merchant parsed from the description (`internal/classifier/merchant.go`) plus payment method |
+| Prompt input | the raw bank line | `Merchant:`, `Payment method:` and a redacted description |
+| Placeholder payees | treated as a merchant name | recognised and ignored |
+| Checking a build | not possible without writing to your books | `DRY_RUN=true` classifies, logs, writes nothing |
+| Diagnostics | none | `tools/audit.py`, `tools/dryrun.py`, `tools/parsedump` |
+| CI | publish only | `go vet` + `go test` gate the publish |
+
+Concrete parse examples — card purchases, Bizum, transfers, and `WWW.AMAZON*WB1R672N5` across its per-purchase variants — are further down in [Merchant parsing](#merchant-parsing).
+
+### Honest scope
+
+This is tuned to one kind of data: Spanish retail banking that puts the merchant in a free-text description and leaves the payee empty or a placeholder. **If your bank fills `destination_name` properly, upstream already does the right thing and this fork changes nothing for you.** If your bank writes descriptions in a shape the rules in `merchant.go` do not recognise, `ParseDescription` returns an empty merchant and everything falls back to the old behaviour — and you can see what it would extract from your own data before changing anything:
+
+```bash
+python3 tools/audit.py descriptions --months 6 | go run ./tools/parsedump
+```
+
+## How this was built
+
+Plainly: **with a lot of AI**, and I would rather say so than let you infer something else.
+
+- Mine: the requirement, the investigation into what Openbank actually puts in `description` versus `destination_name`, acceptance testing against my own Firefly III instance, the decision to publish, and every push-back that shaped the code.
+- The AI coding agent's ([Cline](https://cline.bot), running in VS Code): most of `merchant.go`, the classifier and prompt changes, the pipeline wiring, the audit and dry-run tools, the CI workflow and this documentation. It worked in a long loop in which I ran every step and checked the result.
+- Nothing was taken on faith. `go vet` and `go test`, a local Docker build, then `DRY_RUN=true` against the live API with a stub provider so every prompt and every decision could be read while Firefly III stayed untouched, and only then a real run on freshly imported transactions.
+
+Treat it accordingly: well tested against *my* data, lightly tested against anything else. It writes to your accounting records — read the diff first.
+
+## Maintenance status
+
+- **Not maintained.** No dependency work beyond the automation below, no support, and no promise that a Firefly III or provider API change will not break it.
+- [Dependabot](.github/dependabot.yml) watches Go modules, GitHub Actions and the Docker base images, so stale dependencies at least become visible as pull requests. Merging one is a click; nothing obliges anybody to make it.
+- This app has **no authentication** — see the warning at the top of Getting started. Do not expose it to the internet.
+- AGPL-3.0, like upstream. The source for every image published here is this repository at the matching tag (`git checkout v1.0.0` for `:1.0.0`).
+- Pin a release tag rather than following `:latest`: `latest` is only rebuilt when this fork's `main` moves, which it will not.
+
+## Upstreaming
+
+[UPSTREAM.md](UPSTREAM.md) writes the whole change up as an issue or pull-request body for [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer): the problem, the measurement, the approach, the files touched, the validation and the compatibility notes. Copy it, from this account or any other, so the fix can live in a repository that somebody maintains — which is the only version of this that ages well.
+
+---
+
 ## Features
 
-The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. This project is maintained at [lucasnasc2/FireflyIII-AI-Categorizer](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) — a fork of that fork — and was rewritten from scratch with a new UI and additional features:
+The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer) forked that one and rewrote it from scratch with a new UI and additional features. [This fork](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) adds [merchant-based grouping](#why-this-fork-exists) on top of that and is otherwise the same:
 
 - **Web UI.** A built-in dashboard, styled to match Firefly III's AdminLTE theme with light and dark mode support, provides real-time job monitoring, a transactions browser with manual re-categorisation, a category viewer, a review page for AI decisions, and a full settings page.
 - **Multiple AI providers.** Supports OpenAI (and any OpenAI-compatible endpoint such as Ollama or Azure OpenAI), Google Gemini, and DeepSeek — switchable from the settings page.
@@ -217,7 +277,7 @@ All variables are optional. When they are absent, the server starts normally and
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model name |
 | `OPENAI_BASE_URL` | — | Override for OpenAI-compatible APIs (Ollama, Azure, etc.) |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Gemini model name. That is the binary's built-in default; leave it unset unless your account needs a different model. |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek model name |
 
@@ -240,6 +300,7 @@ All variables are optional. When they are absent, the server starts normally and
 | `HISTORY_LOOKBACK_DAYS` | `90` | How far back to search for history examples |
 | `HISTORY_CACHE_TTL` | `10m` | How long to cache the history lookup |
 | `DRY_RUN` | `false` | Classify as usual but never write to Firefly III — every decision is logged instead. Use it to validate a new build against production data before letting it write. |
+| `DESTINATION_MATCH_ENABLED` | `false` | Env-var equivalent of Settings → Behaviour → "Set destination account automatically". |
 
 ---
 
@@ -290,7 +351,7 @@ python3 tools/dryrun.py stub &
 docker compose run --rm -e DRY_RUN=true \
   -e OPENAI_BASE_URL=http://127.0.0.1:18080/v1 server
 
-# 3. Journal ids whose payee is still a placeholder -- these are the ones that
+# 3. Journal ids whose payee is still a placeholder — these are the ones that
 #    used to be grouped together under "(unknown destination)"
 python3 tools/dryrun.py ids
 

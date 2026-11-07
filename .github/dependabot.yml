@@ -1,0 +1,22 @@
+# Keep the dependencies of an otherwise-unmaintained fork from silently rotting.
+# PRs still have to be merged by a human -- this only makes the rot visible and
+# the fix one click away.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Watches the base images in the Dockerfile (golang:1.22-alpine, alpine:3.20).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
