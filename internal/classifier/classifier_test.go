@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const payeeForPrompt = "COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12"
+
 // A payee that carries no merchant information must be recognised as blank.
 // "(unknown destination)" is what Firefly III fills in when the bank supplies no
 // payee, and it was missing from the original list.
@@ -124,5 +126,91 @@ func TestBuildUserPromptSkipsPlaceholderAccounts(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "  - Mercadona") {
 		t.Errorf("prompt dropped the real account:\n%s", prompt)
+	}
+}
+
+// The history block must be labelled with the key the history was actually looked
+// up by, otherwise a learned merchant is invisible in the prompt.
+func TestBuildUserPromptUsesHistoryKey(t *testing.T) {
+	req := Request{
+		DestinationName: "(unknown destination)",
+		Description:     payeeForPrompt,
+		HistoryKey:      "AZAHAR NOCHE",
+		History: []HistoricalEntry{
+			{Description: "COMPRA EN AZAHAR NOCHE 2026-10-01", CategoryName: "Eating Out"},
+		},
+	}
+	prompt := buildUserPrompt(req)
+	if !strings.Contains(prompt, `Past classifications for "AZAHAR NOCHE"`) {
+		t.Errorf("history block is not labelled with the lookup key:\n%s", prompt)
+	}
+
+	// Without a key, the description is still used as the label.
+	req.HistoryKey = ""
+	if prompt := buildUserPrompt(req); !strings.Contains(prompt, `Past classifications for "`+payeeForPrompt+`"`) {
+		t.Errorf("fallback label missing:\n%s", prompt)
+	}
+}
+
+// merchant learned the first time, even though the date and card mask differ.
+func TestDescriptionFingerprint(t *testing.T) {
+	a := DescriptionFingerprint("COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12")
+	b := DescriptionFingerprint("COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX1111 EL 2026-11-03")
+	if a != b {
+		t.Errorf("same merchant should share a fingerprint:\n a=%q\n b=%q", a, b)
+	}
+
+	c := DescriptionFingerprint("COMPRA BIZUM VENTA BILLETES RENFE 2026-08-25 PEDIDO 000457060982")
+	if a == c {
+		t.Errorf("different merchants must not share a fingerprint (%q)", a)
+	}
+	if strings.ContainsAny(a, "0123456789:,-*.") {
+		t.Errorf("fingerprint %q should keep letters only", a)
+	}
+	if DescriptionFingerprint("") != "" {
+		t.Error("empty description should yield an empty fingerprint")
+	}
+}
+
+// The merchant is only accepted from the model when it was asked for.
+func TestParseResponseMerchant(t *testing.T) {
+	raw := `{"outcome":"CLASSIFIED","category":{"name":"Groceries","confidence":"CLASSIFIED"},` +
+		`"reason":"supermarket","assumption":null,"merchant":"  Mercadona "}`
+	cats := []Category{{Name: "Groceries"}}
+
+	got := parseResponse(raw, "prompt", Request{Categories: cats, MerchantLookup: true})
+	if got.Merchant != "Mercadona" {
+		t.Errorf("Merchant = %q, want %q", got.Merchant, "Mercadona")
+	}
+
+	// Without the opt-in, the same response must not produce a merchant.
+	if got := parseResponse(raw, "prompt", Request{Categories: cats}); got.Merchant != "" {
+		t.Errorf("Merchant = %q, want empty when lookup is off", got.Merchant)
+	}
+
+	// Placeholders are rejected so they can never become a history key.
+	placeholder := `{"outcome":"CLASSIFIED","category":{"name":"Groceries","confidence":"CLASSIFIED"},` +
+		`"reason":"unknown","assumption":null,"merchant":"(unknown destination)"}`
+	if got := parseResponse(placeholder, "prompt", Request{Categories: cats, MerchantLookup: true}); got.Merchant != "" {
+		t.Errorf("Merchant = %q, want empty for a placeholder", got.Merchant)
+	}
+}
+
+// The system prompt gains the merchant instructions only when asked.
+func TestBuildSystemPromptMerchantLookup(t *testing.T) {
+	off := BuildSystemPrompt("", false, false)
+	if strings.Contains(off, `"merchant"`) {
+		t.Errorf("merchant schema leaked into a prompt that did not ask for it:\n%s", off)
+	}
+
+	on := BuildSystemPrompt("", false, true)
+	if !strings.Contains(on, `"merchant"`) || !strings.Contains(on, "Merchant rules:") {
+		t.Errorf("merchant instructions missing:\n%s", on)
+	}
+
+	// Custom context still comes last, after the merchant block.
+	withCtx := BuildSystemPrompt("I shop at Mercadona", false, true)
+	if !strings.HasSuffix(strings.TrimSpace(withCtx), "I shop at Mercadona") {
+		t.Errorf("custom context is no longer last:\n%s", withCtx)
 	}
 }

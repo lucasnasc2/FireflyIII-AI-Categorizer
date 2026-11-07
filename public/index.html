@@ -676,6 +676,24 @@
                                             </div>
                                         </div>
                                         <div class="form-group">
+                                            <div class="col-sm-offset-4 col-sm-8">
+                                                <div class="checkbox">
+                                                    <label>
+                                                        <input type="checkbox" id="cfg-merchant-lookup">
+                                                        <strong>Learn merchant names from descriptions</strong>
+                                                    </label>
+                                                </div>
+                                                <p class="help-block" style="margin-top:2px">
+                                                    When a transaction arrives without a usable payee, ask the model to
+                                                    name the merchant as well, and remember it in memory. Later
+                                                    transactions with the same description are then matched to that
+                                                    merchant, so they can be classified from history without a model
+                                                    call. The name is never written to Firefly III. It costs a few
+                                                    extra output tokens per call and is lost on restart.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
                                             <label class="col-sm-4 control-label">Review search engine</label>
                                             <div class="col-sm-4">
                                                 <select class="form-control" id="cfg-search-engine">

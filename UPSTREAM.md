@@ -117,12 +117,9 @@ GroupKey("(unknown destination)", descB)`), and the shape of the user prompt.
 The placeholders themselves could be cleaned up at the source, but that is a
 different trade: either the payee is left empty (the bank's truth) or a merchant
 name is inferred from the description. Inferring it means asking the model for a
-canonical merchant in the same response and caching `description -> merchant`, so
-repeats can skip the call entirely; that is a behaviour change with a small
-per-merchant token cost, so it belongs behind a setting and a separate PR. My
-fork carries a bank-specific parser that does this offline, and it is not
-proposed here: it only knows one bank's format, and the generic fallback above is
-what a shared tool should do.
+merchant name in the same response and remembering it so repeats skip the call.
+That is a behaviour change with a small per-merchant token cost, so it belongs
+behind a setting and a separate proposal rather than inside this fix.
 
 ---
 

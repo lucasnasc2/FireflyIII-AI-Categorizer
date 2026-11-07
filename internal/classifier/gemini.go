@@ -25,7 +25,7 @@ func NewGemini(apiKey, model, customContext string) (*GeminiClassifier, error) {
 func (c *GeminiClassifier) Classify(ctx context.Context, req Request) (Result, error) {
 	prompt := buildUserPrompt(req)
 
-	sysPrompt := BuildSystemPrompt(c.customContext, req.DestinationMatching)
+	sysPrompt := BuildSystemPrompt(c.customContext, req.DestinationMatching, req.MerchantLookup)
 	if req.SystemPromptOverride != "" {
 		sysPrompt = req.SystemPromptOverride
 	}
@@ -52,5 +52,5 @@ func (c *GeminiClassifier) Classify(ctx context.Context, req Request) (Result, e
 		return Result{}, fmt.Errorf("gemini: unexpected response part type")
 	}
 
-	return parseResponse(string(text), prompt, req.Categories, req.ExpenseAccounts, req.DestinationMatching), nil
+	return parseResponse(string(text), prompt, req), nil
 }

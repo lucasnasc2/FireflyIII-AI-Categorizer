@@ -3,6 +3,7 @@ package classifier
 import (
 	"context"
 	"strings"
+	"unicode"
 )
 
 type Outcome string
@@ -68,6 +69,22 @@ func IsBlankName(s string) bool {
 	return strings.HasPrefix(norm, "(") && strings.HasSuffix(norm, ")")
 }
 
+// DescriptionFingerprint reduces a bank description to a key that ignores the
+// parts that change from one purchase to the next: only letters survive, and
+// they are upper-cased. Card masks, amounts, dates, order numbers and
+// punctuation are dropped, so two card purchases at the same shop share a key
+// while purchases at different shops do not.
+func DescriptionFingerprint(description string) string {
+	var b strings.Builder
+	b.Grow(len(description))
+	for _, r := range description {
+		if unicode.IsLetter(r) {
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	return b.String()
+}
+
 // Category is a classifiable Firefly III category with optional notes that
 // provide the LLM with extra context about what belongs in each category.
 type Category struct {
@@ -107,6 +124,16 @@ type Request struct {
 	// won't bother computing a destination even if expense accounts are provided.
 	CategoryOnly bool
 
+	// HistoryKey is the key the caller looked req.History up with, when that
+	// differs from GroupKey's fallback (merchant learning can supply one). It is
+	// only used to label the history block in the prompt.
+	HistoryKey string
+
+	// MerchantLookup asks the model to also name the merchant it inferred from
+	// the description. The name is cached so repeat descriptions can skip the
+	// call entirely; it is never written to Firefly III.
+	MerchantLookup bool
+
 	// SystemPromptOverride replaces the built-in system prompt when non-empty.
 	// Used for special-purpose LLM calls like transfer destination suggestion.
 	SystemPromptOverride string
@@ -123,6 +150,10 @@ type Result struct {
 	// Destination is set when destination-account matching was enabled
 	// and the LLM returned a valid destination suggestion.
 	Destination *DestinationResult
+
+	// Merchant is the merchant name the LLM read out of the description. Only
+	// set when Request.MerchantLookup was true and the model returned one.
+	Merchant string
 }
 
 type Classifier interface {

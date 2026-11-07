@@ -20,17 +20,18 @@ type rawDestination struct {
 // rawResponse uses json.RawMessage for category so we can accept both the
 // old flat-string format and the new {name, confidence} object format.
 type rawResponse struct {
-	Outcome     string           `json:"outcome"`
-	Category    json.RawMessage  `json:"category"`
-	Reason      string           `json:"reason"`
-	Assumption  *string          `json:"assumption"`
-	Destination *rawDestination  `json:"destination"`
+	Outcome     string          `json:"outcome"`
+	Category    json.RawMessage `json:"category"`
+	Reason      string          `json:"reason"`
+	Assumption  *string         `json:"assumption"`
+	Destination *rawDestination `json:"destination"`
+	Merchant    *string         `json:"merchant"`
 }
 
 // parseResponse validates and converts a raw JSON string into a Result.
 // It falls back to NeedsReview on any structural or validation error.
-// When destinationMatching is true, the destination field is also parsed.
-func parseResponse(raw, prompt string, categories []Category, expenseAccounts []AccountCandidate, destinationMatching bool) Result {
+// Destination and merchant fields are only accepted when req asked for them.
+func parseResponse(raw, prompt string, req Request) Result {
 	cleaned := stripMarkdown(raw)
 
 	var r rawResponse
@@ -68,7 +69,7 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 		}
 	}
 
-	if category != "" && !categoryNameIn(categories, category) {
+	if category != "" && !categoryNameIn(req.Categories, category) {
 		// Don't use the unknown category name in the reason message since we've already
 		// overwritten category to "" below — capture it first.
 		badCat := category
@@ -83,7 +84,7 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 	}
 
 	var dest *DestinationResult
-	if destinationMatching && r.Destination != nil && r.Destination.Name != "" {
+	if req.DestinationMatching && r.Destination != nil && r.Destination.Name != "" {
 		d := r.Destination
 		dest = &DestinationResult{
 			Name:       d.Name,
@@ -96,10 +97,18 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 		if dest.Confidence != "CLASSIFIED" && dest.Confidence != "ASSUMED" {
 			dest = nil // invalid confidence → ignore
 		}
-		if dest != nil && dest.Action == "MATCH" && !accountNameIn(dest.Name, expenseAccounts) {
+		if dest != nil && dest.Action == "MATCH" && !accountNameIn(dest.Name, req.ExpenseAccounts) {
 			// MATCH requires the name to exist in the provided list.
 			dest = nil
 		}
+	}
+
+	// The merchant is only accepted when it was asked for: models happily echo
+	// fields they were not given a schema for, and a stray one must never end up
+	// as a history key.
+	merchant := ""
+	if req.MerchantLookup && r.Merchant != nil {
+		merchant = sanitizeMerchant(*r.Merchant)
 	}
 
 	return Result{
@@ -110,7 +119,18 @@ func parseResponse(raw, prompt string, categories []Category, expenseAccounts []
 		RawPrompt:   prompt,
 		RawResponse: raw,
 		Destination: dest,
+		Merchant:    merchant,
 	}
+}
+
+// sanitizeMerchant trims a model-supplied merchant name and rejects the ones
+// that would poison the history key: empty, a placeholder, or a whole sentence.
+func sanitizeMerchant(s string) string {
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if s == "" || IsBlankName(s) || len([]rune(s)) > 60 {
+		return ""
+	}
+	return s
 }
 
 func categoryNameIn(cats []Category, name string) bool {

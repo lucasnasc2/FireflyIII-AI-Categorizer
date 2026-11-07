@@ -350,6 +350,7 @@ type configResponse struct {
 	Configured          bool   `json:"configured"`
 
 	DestinationMatchEnabled bool `json:"destination_match_enabled"`
+	MerchantLookupEnabled   bool `json:"merchant_lookup_enabled"`
 
 	SearchEngine string `json:"search_engine"`
 
@@ -377,6 +378,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Configured:          cfg.IsConfigured(),
 
 		DestinationMatchEnabled: cfg.DestinationMatchEnabled,
+		MerchantLookupEnabled:   cfg.MerchantLookupEnabled,
 
 		SearchEngine: cfg.SearchEngine,
 
@@ -405,6 +407,7 @@ type configUpdateRequest struct {
 	CustomSystemContext *string `json:"custom_system_context"`
 
 	DestinationMatchEnabled *bool `json:"destination_match_enabled"`
+	MerchantLookupEnabled   *bool `json:"merchant_lookup_enabled"`
 
 	SearchEngine *string `json:"search_engine"`
 
@@ -1161,7 +1164,7 @@ func (h *Handler) reloadClients() error {
 		return fmt.Errorf("classifier init: %w", err)
 	}
 
-	pipe := pipeline.New(fc, cl, ca, h.registry, cfg.HistoryContextLimit, cfg.DestinationMatchEnabled, cfg.DryRun)
+	pipe := pipeline.New(fc, cl, ca, h.registry, cfg.HistoryContextLimit, cfg.DestinationMatchEnabled, cfg.DryRun, cfg.MerchantLookupEnabled)
 
 	h.mu.Lock()
 	h.fc = fc
@@ -1226,6 +1229,9 @@ func mergeConfigUpdate(existing config.StoredConfig, req configUpdateRequest) co
 	}
 	if req.DestinationMatchEnabled != nil {
 		existing.DestinationMatchEnabled = req.DestinationMatchEnabled
+	}
+	if req.MerchantLookupEnabled != nil {
+		existing.MerchantLookupEnabled = req.MerchantLookupEnabled
 	}
 	if req.SearchEngine != nil {
 		existing.SearchEngine = *req.SearchEngine

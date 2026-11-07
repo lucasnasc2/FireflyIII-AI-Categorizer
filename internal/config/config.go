@@ -34,6 +34,7 @@ type Config struct {
 	HistoryContextLimit int
 
 	DestinationMatchEnabled bool
+	MerchantLookupEnabled   bool
 
 	SearchEngine string // "google", "duckduckgo", or "" (disabled)
 
@@ -68,6 +69,7 @@ func Load() (*Config, *Store, error) {
 		HistoryContextLimit:     getEnvInt("HISTORY_CONTEXT_LIMIT", 5),
 		HistoryLookbackDays:     getEnvInt("HISTORY_LOOKBACK_DAYS", 90),
 		DestinationMatchEnabled: getEnv("DESTINATION_MATCH_ENABLED", "false") == "true",
+		MerchantLookupEnabled:   getEnv("MERCHANT_LOOKUP_ENABLED", "false") == "true",
 		WorkerConcurrency:       getEnvInt("WORKER_CONCURRENCY", 1),
 		BatchConcurrency:        getEnvInt("BATCH_CONCURRENCY", 5),
 		DryRun:                  getEnv("DRY_RUN", "false") == "true",
@@ -151,6 +153,9 @@ func ApplyStored(cfg *Config, sc StoredConfig) {
 	// We track this via a pointer so the store can signal "was configured".
 	if sc.DestinationMatchEnabled != nil {
 		cfg.DestinationMatchEnabled = *sc.DestinationMatchEnabled
+	}
+	if sc.MerchantLookupEnabled != nil {
+		cfg.MerchantLookupEnabled = *sc.MerchantLookupEnabled
 	}
 	if sc.SearchEngine != "" {
 		cfg.SearchEngine = sc.SearchEngine

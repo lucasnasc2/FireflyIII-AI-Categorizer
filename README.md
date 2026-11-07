@@ -44,7 +44,9 @@ This fork makes the placeholder check generic, so no bank-specific rules are inv
 
 **If your bank fills `destination_name` properly, upstream already does the right thing and this fork changes nothing for you.** If your bank does not, this fork stops the damage (unrelated merchants no longer share one history bucket) but does not invent a merchant name: the model works from the raw description, exactly as upstream intends for nameless payees.
 
-The trade is calls, not accuracy. Keyed on the placeholder, upstream got no history at all for these transactions, so every one of them cost a model call. Keyed on the description, an exact repeat of the same description can now be recognised — but banks that stamp a date or a reference into every line (mine does) still produce a unique description each time, so most transactions still call the model. The obvious next step is to have the model return a canonical merchant name alongside the category and cache `description → merchant`, behind an opt-in setting, so repeats can skip the call; that is not implemented here.
+The trade is calls, not accuracy. Keyed on the placeholder, upstream got no history at all for these transactions, so every one of them cost a model call. Keyed on the description, an exact repeat of the same description is now recognised — but banks that stamp a date or a reference into every line (mine does) produce a unique description each time, so by default most transactions still call the model.
+
+That last gap is what [merchant learning](#learned-merchant-names-opt-in) closes: it is off by default, and when you turn it on the model names the merchant, the name is remembered, and repeat purchases at that shop are classified from history without a call.
 
 Two things help you judge it on your own data, both read-only:
 
@@ -310,6 +312,7 @@ All variables are optional. When they are absent, the server starts normally and
 | `HISTORY_CACHE_TTL` | `10m` | How long to cache the history lookup |
 | `DRY_RUN` | `false` | Classify as usual but never write to Firefly III — every decision is logged instead. Use it to validate a new build against production data before letting it write. |
 | `DESTINATION_MATCH_ENABLED` | `false` | Env-var equivalent of Settings → Behaviour → "Set destination account automatically". |
+| `MERCHANT_LOOKUP_ENABLED` | `false` | Env-var equivalent of Settings → Behaviour → "Learn merchant names from descriptions". Asks the model to name the merchant and remembers it so repeat descriptions skip the call. In-memory, never written to Firefly III. |
 
 ---
 
@@ -338,11 +341,30 @@ Transaction to classify:
 
 A real `destination_name` is never second-guessed: when Firefly III holds an actual merchant, that name keeps winning.
 
-`internal/classifier/classifier_test.go` covers the name check, the regression (two merchants behind one placeholder keep distinct history keys) and the prompt shape; it is the repository's first test file and uses only the standard library.
+`internal/classifier/classifier_test.go` covers the name check, the regression (two merchants behind one placeholder keep distinct history keys) and the prompt shape; `internal/cache/cache_test.go` covers the learned-merchant keys. Both use only the standard library.
 
 ```bash
-go test ./internal/classifier
+go test ./internal/classifier ./internal/cache
 ```
+
+### Learned merchant names (opt-in)
+
+`MERCHANT_LOOKUP_ENABLED=true`, or *Settings → Behaviour → "Learn merchant names from descriptions"*.
+
+Left at the default, a transaction whose description is new always costs a model call, because the description is the history key and the bank changes it every time. With this setting on, the classification call is also asked to name the merchant — one extra string in a response that was being generated anyway, not a second request. The name is then remembered against a fingerprint of the description: letters only, upper-cased, so the card mask, amount, date and order number drop out. Two purchases at the same shop produce one fingerprint.
+
+From then on:
+
+- history lookup uses the learned merchant as the key, so transactions from that shop group together even though no two descriptions are identical;
+- when the history match is confident enough, the model call is skipped entirely — the same short-circuit that exists for named payees;
+- Firefly III is never written to with the merchant name. It stays a lookup key.
+
+What it costs and what it does not do:
+
+- One model call per merchant, the first time it is seen. Nothing can infer a merchant without looking at it once.
+- The map lives in memory and is lost on restart: the first transaction per merchant after a restart re-learns it.
+- The learned name is the model's, so it can vary between providers and models. That is why this is a setting rather than the default — the fallback (key on the description) never invents anything.
+- The fingerprint only separates merchants as well as the description does. If your bank writes identical descriptions for two different shops, they will share a key; nothing here can tell them apart.
 
 ### Validating a build with `DRY_RUN`
 
@@ -350,19 +372,24 @@ go test ./internal/classifier
 
 ```bash
 # 1. Stub OpenAI-compatible endpoint: answers with a fixed category and
-#    records every prompt it receives (default /tmp/stub-prompts.log)
-python3 tools/dryrun.py stub &
+#    records every prompt it receives (default /tmp/stub-prompts.log).
+#    Add --merchant to also test merchant learning.
+python3 tools/dryrun.py stub --merchant 'Some Merchant' &
 
-# 2. Start the app against the stub, with writes disabled
-docker compose run --rm -e DRY_RUN=true \
-  -e OPENAI_BASE_URL=http://127.0.0.1:18080/v1 server
+# 2. Start the app against the stub, with writes disabled. Under Docker the
+#    stub's loopback address is not the container's, so use network host.
+docker run --rm --network host --env-file .env \
+  -e DRY_RUN=true -e MERCHANT_LOOKUP_ENABLED=true -e PORT=13099 \
+  -e OPENAI_BASE_URL=http://127.0.0.1:18080/v1 -e OPENAI_API_KEY=stub \
+  firefly-aicat-categorizer:dev
 
 # 3. Journal ids whose payee is still a placeholder — these are the ones that
 #    used to be grouped together under "(unknown destination)"
 python3 tools/dryrun.py ids
 
-# 4. Classify them, then confirm nothing changed in Firefly III
-curl -X POST localhost:3000/batch/run -H 'Content-Type: application/json' \
+# 4. Classify them, then confirm nothing changed in Firefly III. Run it twice:
+#    the second run should show history-matched / skipped model calls.
+curl -X POST localhost:13099/batch/run -H 'Content-Type: application/json' \
   -d '{"filter":{"transaction_ids":["528","527"]},"force":true}'
 python3 tools/dryrun.py show 528
 ```

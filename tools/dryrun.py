@@ -73,7 +73,7 @@ def cmd_show(base: str, token: str, ids: list[str]) -> int:
 
 
 
-def make_handler(category: str, log_path: str) -> type[BaseHTTPRequestHandler]:
+def make_handler(category: str, log_path: str, merchant: str | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
             length = int(self.headers.get("Content-Length") or 0)
@@ -89,7 +89,7 @@ def make_handler(category: str, log_path: str) -> type[BaseHTTPRequestHandler]:
                 "outcome": "CLASSIFIED",
                 "category": {"name": category, "confidence": "CLASSIFIED"},
                 "reason": "stub",
-            })
+            } | ({"merchant": merchant} if merchant else {}))
             data = json.dumps({
                 "id": "stub",
                 "object": "chat.completion",
@@ -114,12 +114,12 @@ def make_handler(category: str, log_path: str) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def cmd_stub(port: int, category: str, log_path: str) -> int:
+def cmd_stub(port: int, category: str, log_path: str, merchant: str | None) -> int:
     print(
         f"stub listening on http://127.0.0.1:{port}/v1, prompts -> {log_path}",
         file=sys.stderr,
     )
-    HTTPServer(("127.0.0.1", port), make_handler(category, log_path)).serve_forever()
+    HTTPServer(("127.0.0.1", port), make_handler(category, log_path, merchant)).serve_forever()
     return 0
 
 
@@ -134,12 +134,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--limit", type=int, default=5, help="ids: max ids to print (0 = all)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="stub: listen port")
     parser.add_argument("--category", default="Groceries", help="stub: category to answer with")
+    parser.add_argument(
+        "--merchant",
+        default=None,
+        help="stub: also answer with this merchant name (tests merchant learning)",
+    )
     parser.add_argument("--log", default=DEFAULT_LOG, help="stub: where to append request bodies")
     parser.add_argument("--env-file", action="append", default=[], help="extra .env file to read")
     args = parser.parse_args(argv)
 
     if args.command == "stub":
-        return cmd_stub(args.port, args.category, args.log)
+        return cmd_stub(args.port, args.category, args.log, args.merchant)
 
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)

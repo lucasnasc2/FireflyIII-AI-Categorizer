@@ -85,6 +85,19 @@ Rules:
 - If the description is too vague to even assume, use NEEDS_REVIEW
 - Respond ONLY with the JSON object, no markdown, no code fences`
 
+// merchantSuffix is appended to the system prompt when merchant lookup is on.
+// It piggybacks on the classification call: asking for one more string costs a
+// few output tokens, while a second round-trip would cost a whole request.
+const merchantSuffix = `
+
+Also add this field to the JSON object:
+  "merchant": "<the merchant this payment went to, or null>"
+
+Merchant rules:
+- Name the merchant as a person would: "Mercadona", "Amazon", "Renfe".
+- Read it out of the description, dropping card masks, dates, order numbers and bank boilerplate ("COMPRA EN", "CON LA TARJETA", "PEDIDO", ...).
+- Use null when the description identifies no merchant.`
+
 // formatCategories renders the category list for the prompt.
 // When any category carries notes, a bulleted list is used so the LLM can
 // read each description. Without notes it falls back to a compact comma list.
@@ -118,11 +131,15 @@ func formatCategories(cats []Category) string {
 
 // BuildSystemPrompt returns the system prompt, appending any user-supplied
 // custom context after the fixed rules. When destinationMatching is true, the
-// prompt includes destination account assignment instructions.
-func BuildSystemPrompt(customContext string, destinationMatching bool) string {
+// prompt includes destination account assignment instructions; when
+// merchantLookup is true, it also asks for the merchant name.
+func BuildSystemPrompt(customContext string, destinationMatching, merchantLookup bool) string {
 	base := SystemPrompt
 	if destinationMatching {
 		base = SystemPromptWithDestination
+	}
+	if merchantLookup {
+		base += merchantSuffix
 	}
 	if strings.TrimSpace(customContext) == "" {
 		return base
@@ -134,7 +151,10 @@ func buildUserPrompt(req Request) string {
 	var sb strings.Builder
 
 	if len(req.History) > 0 {
-		gk := GroupKey(req.DestinationName, req.Description)
+		gk := req.HistoryKey
+		if gk == "" {
+			gk = GroupKey(req.DestinationName, req.Description)
+		}
 		fmt.Fprintf(&sb, "Past classifications for %q:\n", gk)
 		for _, h := range req.History {
 			fmt.Fprintf(&sb, "  - %q → %s\n", h.Description, h.CategoryName)

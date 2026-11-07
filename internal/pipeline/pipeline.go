@@ -46,6 +46,10 @@ type Pipeline struct {
 	// validate a new build against real production data without mutating it.
 	dryRun bool
 
+	// merchantLookup asks the model to name the merchant it inferred, so repeat
+	// descriptions can be keyed on it instead of on the raw description.
+	merchantLookup bool
+
 	// Short-lived category cache to avoid re-fetching on every job in a batch.
 	catMu      sync.RWMutex
 	catCache   []firefly.Category
@@ -65,6 +69,7 @@ func New(
 	contextN int,
 	destinationMatch bool,
 	dryRun bool,
+	merchantLookup bool,
 ) *Pipeline {
 	return &Pipeline{
 		firefly:          fc,
@@ -74,6 +79,7 @@ func New(
 		contextN:         contextN,
 		destinationMatch: destinationMatch,
 		dryRun:           dryRun,
+		merchantLookup:   merchantLookup,
 	}
 }
 
@@ -133,7 +139,9 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		clAccounts = append(clAccounts, classifier.AccountCandidate{ID: a.ID, Name: a.Name})
 	}
 
-	gkey := classifier.GroupKey(j.DestinationName, j.Description)
+	// The group key is the payee when Firefly III has a real one, otherwise the
+	// merchant learned for this description, otherwise the description itself.
+	gkey := p.cache.Key(j.DestinationName, j.Description)
 
 	// Fetch enough history for both the match check and the AI prompt.
 	lookupLimit := historyMatchLookup
@@ -234,13 +242,25 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		Description:          j.Description,
 		Amount:               j.Amount,
 		History:              promptHistory,
+		HistoryKey:           gkey,
 		ExpenseAccounts:      clAccounts,
 		DestinationMatching:  opts.MatchDestination,
 		CategoryOnly:         opts.ClassifyCategory && !opts.MatchDestination,
+		MerchantLookup:       p.merchantLookup,
 	})
 	if err != nil {
 		p.registry.SetFailed(j.ID, err.Error())
 		return fmt.Errorf("classify: %w", err)
+	}
+
+	// Learn the merchant from this classification and adopt it as the group key,
+	// so the entry below and every later transaction with the same description
+	// share one history bucket. This is the whole point of the setting: the call
+	// that just happened is the last one that description should need.
+	if p.merchantLookup && result.Merchant != "" {
+		p.cache.SetMerchant(j.Description, result.Merchant)
+		gkey = p.cache.Key(j.DestinationName, j.Description)
+		slog.Info("learned merchant", "id", transactionID, "merchant", result.Merchant, "key", gkey)
 	}
 
 	categoryID := ""

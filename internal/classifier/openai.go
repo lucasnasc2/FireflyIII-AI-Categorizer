@@ -28,7 +28,7 @@ func NewOpenAI(apiKey, model, baseURL, customContext string) *OpenAIClassifier {
 func (c *OpenAIClassifier) Classify(ctx context.Context, req Request) (Result, error) {
 	prompt := buildUserPrompt(req)
 
-	sysPrompt := BuildSystemPrompt(c.customContext, req.DestinationMatching)
+	sysPrompt := BuildSystemPrompt(c.customContext, req.DestinationMatching, req.MerchantLookup)
 	if req.SystemPromptOverride != "" {
 		sysPrompt = req.SystemPromptOverride
 	}
@@ -49,5 +49,5 @@ func (c *OpenAIClassifier) Classify(ctx context.Context, req Request) (Result, e
 	}
 
 	raw := resp.Choices[0].Message.Content
-	return parseResponse(raw, prompt, req.Categories, req.ExpenseAccounts, req.DestinationMatching), nil
+	return parseResponse(raw, prompt, req), nil
 }

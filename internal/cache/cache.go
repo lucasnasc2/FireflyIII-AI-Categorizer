@@ -18,6 +18,12 @@ type Cache struct {
 	mu      sync.RWMutex
 	entries []classifier.HistoricalEntry
 
+	// merchants maps a description fingerprint to the merchant name the model
+	// read out of that description. It is what makes lookups stable for a bank
+	// that sends "(unknown destination)" and a different date on every line.
+	// In-memory only: losing it costs one model call per merchant, not data.
+	merchants map[string]string
+
 	fetchedAt time.Time
 	ttl       time.Duration
 	lookback  int
@@ -26,13 +32,56 @@ type Cache struct {
 
 func New(client *firefly.Client, ttl time.Duration, lookbackDays int) *Cache {
 	return &Cache{
-		ttl:      ttl,
-		lookback: lookbackDays,
-		client:   client,
+		merchants: make(map[string]string),
+		ttl:       ttl,
+		lookback:  lookbackDays,
+		client:    client,
 	}
 }
 
-// GetHistory returns up to limit past classifications whose GroupKey matches
+// Key returns the key to group and look up this transaction's history by: the
+// payee when Firefly III has a real one, otherwise the merchant learned for this
+// description, otherwise the description itself.
+func (c *Cache) Key(destinationName, description string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.keyLocked(destinationName, description)
+}
+
+// keyLocked is Key for callers that already hold the lock.
+func (c *Cache) keyLocked(destinationName, description string) string {
+	if classifier.IsBlankName(destinationName) {
+		if m := c.merchants[classifier.DescriptionFingerprint(description)]; m != "" {
+			return m
+		}
+	}
+	return classifier.GroupKey(destinationName, description)
+}
+
+// Merchant returns the merchant learned for a description, or "".
+func (c *Cache) Merchant(description string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.merchants[classifier.DescriptionFingerprint(description)]
+}
+
+// SetMerchant records the merchant a classification inferred from a
+// description, so later transactions with the same description can be looked up
+// under it and skip the model call.
+func (c *Cache) SetMerchant(description, merchant string) {
+	if merchant == "" {
+		return
+	}
+	fp := classifier.DescriptionFingerprint(description)
+	if fp == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.merchants[fp] = merchant
+}
+
+// GetHistory returns up to limit past classifications whose group key matches
 // groupKey, most-recent first. Silently returns nil on refresh errors (the
 // classifier still works, just without context).
 func (c *Cache) GetHistory(ctx context.Context, groupKey string, limit int) []classifier.HistoricalEntry {
@@ -49,7 +98,9 @@ func (c *Cache) GetHistory(ctx context.Context, groupKey string, limit int) []cl
 
 	var matches []classifier.HistoricalEntry
 	for i := len(c.entries) - 1; i >= 0 && len(matches) < limit; i-- {
-		if c.entries[i].GroupKey == groupKey {
+		// Recompute the key rather than trusting the stored one: a merchant
+		// learned since this entry was fetched changes what it groups under.
+		if c.keyLocked(c.entries[i].DestinationName, c.entries[i].Description) == groupKey {
 			matches = append(matches, c.entries[i])
 		}
 	}
@@ -106,7 +157,7 @@ func (c *Cache) ensureFresh(ctx context.Context) error {
 				DestinationName:      s.DestinationName,
 				Description:          s.Description,
 				CategoryName:         s.CategoryName,
-				GroupKey:             classifier.GroupKey(s.DestinationName, s.Description),
+				GroupKey:             c.keyLocked(s.DestinationName, s.Description),
 				Amount:               amount,
 				DestinationAccountID: s.DestinationID,
 			})
