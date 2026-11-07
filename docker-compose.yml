@@ -1,4 +1,4 @@
-# Isolated local test harness for the AI categorizer.
+# Local test harness for the AI categorizer.
 #
 # This file is intentionally self-contained: it defines its own project name,
 # its own network and its own container names so it cannot collide with the
@@ -6,15 +6,24 @@
 #
 # The categorizer reaches Firefly III over HTTPS using FIREFLY_URL +
 # FIREFLY_PERSONAL_TOKEN from .env -- no shared docker network is required.
+#
+# Two ways to run it:
+#
+#   docker compose up -d          # use the published image from GHCR
+#   docker compose up -d --build  # build this checkout instead
+#
+# AICAT_TAG in .env pins a release (for example 2.0.0) instead of following
+# latest. `docker compose pull` fetches the tag, `docker compose up -d`
+# recreates the container with it.
 
 name: firefly-aicat
 
 services:
   categorizer:
+    image: ghcr.io/lucasnasc2/fireflyiii-ai-categorizer:${AICAT_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: firefly-aicat-categorizer:dev
     container_name: aicat-categorizer
     restart: unless-stopped
     env_file:
@@ -22,6 +31,10 @@ services:
     ports:
       # Loopback only: nothing is exposed to the LAN or to any reverse proxy.
       - "127.0.0.1:13000:3000"
+    volumes:
+      # Keeps /data/config.json -- everything saved in Settings -- across
+      # container recreation. data/ is gitignored apart from .gitkeep.
+      - ./data:/data
     networks:
       - aicat
     healthcheck:

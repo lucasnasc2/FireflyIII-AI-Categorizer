@@ -4,8 +4,12 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  release:
-    types: [published]
+  pull_request:
+
+# A newer push to the same branch makes the running build pointless.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -29,6 +33,9 @@ jobs:
 
   push:
     needs: test
+    # Pull requests only run `vet` + `test`; publishing needs packages:write,
+    # which a fork's PR does not have.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,6 +54,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            # `latest` tracks main; a tag push adds the semver tags only.
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
