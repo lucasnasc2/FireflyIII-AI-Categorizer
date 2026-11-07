@@ -1,125 +1,129 @@
-# Categorise on the merchant parsed from the description, not on the placeholder payee
+# Recognise placeholder payees instead of treating them as merchants
 
-*This file is a ready-to-submit issue / pull-request body for
-[ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer).
-Copy it into an issue, or use it as a PR description, from this account or any
-other. The reference implementation is
-[`lucasnasc2/FireflyIII-AI-Categorizer`](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer)
-at commit `8b958b6`, kept as a single small diff. It is offered freely under the
-existing AGPL-3.0 licence, with no expectation that anyone maintains my fork.*
+> Ready to submit as the body of an issue or pull request against
+> [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer).
+> Copy it from this account or any other.
 
----
 
-## Problem
+Some banks never send a `destination_name`. Firefly III then stores the card
+purchase with the payee `(unknown destination)`, and that string became the
+history group key: `isBlankName()` knows `(no name)`, `unknown` and `n/a`, but not
+`(unknown destination)`.
 
-Some banks never populate `destination_name`. Openbank (Spain) leaves the payee
-empty — Firefly III shows it as `(unknown destination)` — and encodes
-everything in the withdrawal description:
+Because history is grouped by payee, every unrelated shop that arrived this way
+shared a single bucket. Whichever category had been decided for one merchant was
+then offered to the model as the history for the next one - and reused. In my
+data **50.7% of September and 89.5% of October withdrawals** carried that
+placeholder, so most card spending was being categorised from one shop's history.
 
-```
-COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
-COMPRA BIZUM VENTA BILLETES RENFE 2026-08-25 PEDIDO 000457060982
-TRANSFERENCIA A FAVOR DE LA CUEVA DEL BARBERO CONCEPTO: FACTURA 12
-COMPRA EN WWW.AMAZON*WB1R672N5, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
-```
+## Fix
 
-`classifier.GroupKey` keys the history lookup on the destination name, so every
-one of those withdrawals shares the key `(unknown destination)`. The
-consequences are worse than "slightly less accurate":
+Make the placeholder check generic, so it does not depend on knowing which
+strings a particular bank writes:
 
-1. **History leaks across merchants.** The few-shot examples are meant to say
-   "this is how earlier purchases from this vendor were categorised". Under a
-   shared placeholder they say "how earlier purchases from *any* vendor were
-   categorised", so a category decided once for a bar is offered back to the
-   model as precedent for a train ticket.
-2. **The signal is buried in noise.** The raw line spends tokens on the card
-   mask, the duplicated date and the authorisation code, and a different code
-   per purchase (`*WB1R672N5`, `*WB9Q111A2`) means Amazon never resembles
-   itself, so history cannot attach there either.
-3. **Destination matching misfires**, treating the placeholder as an existing
-   account.
-
-## Measurement
-
-`tools/audit.py` (read-only, GET requests only) reports the share of withdrawals
-per month whose payee is a placeholder, using the same list the classifier uses:
-
-```bash
-python3 tools/audit.py summary --months 6
+```go
+// IsBlankName reports whether a payee name identifies no merchant: it is empty,
+// a known placeholder, wrapped in parentheses (Firefly III's convention for a
+// placeholder account), or mentions "unknown".
+func IsBlankName(s string) bool {
+    norm := strings.ToLower(strings.TrimSpace(s))
+    if blankNames[norm] {
+        return true
+    }
+    if strings.Contains(norm, "unknown") || strings.Contains(norm, "no name") {
+        return true
+    }
+    return strings.HasPrefix(norm, "(") && strings.HasSuffix(norm, ")")
+}
 ```
 
-On my instance, before the change: **50.7 % of September and 89.5 % of October
-withdrawals carried a placeholder payee.** That is the bug in one number — for
-the most recent month, nine withdrawals in ten were categorised with history
-keyed on a single fake vendor.
+With that, `GroupKey` falls back to the description - which is what it already
+does for nameless payees - and each merchant gets its own history. Real payees
+are untouched: when Firefly III holds a merchant name it is still used as-is.
 
-## Proposed change
+The parentheses rule and the short `blankNames` list also cover the placeholders
+seen in the wild (`no registrado`, `POS Purchase`, `(sin nombre)`, ...) without
+teaching the code any one bank's format.
 
-Group on a merchant parsed out of the description whenever the payee is not
-usable, and send the model that merchant instead of the raw line.
+## Two related places
 
-- `internal/classifier/merchant.go` (new) — `ParseDescription()` applies
-  ordered rules for the ways this bank writes card purchases, Bizum, transfers
-  and bank fees, then normalises the result: legal-form suffixes (`SL`,
-  `S.L.U.`), store numbers, trailing dates and reference numbers stripped,
-  mojibake from older imports repaired, and an aggregator prefix dropped only
-  when what follows is still recognisable. It also returns a payment method
-  (`card`, `bizum`, `transfer`, ...), because a Bizum to a person and a card
-  payment to a shop are rarely the same kind of expense.
-- `Redact()` — the description as shown to the model, card mask and boilerplate
-  removed.
-- `classifier.GroupKey` — keeps a real `destination_name` when Firefly III has
-  one, otherwise uses `MerchantInfo.Key()`; `blankNames` gains the placeholders
-  seen in practice (`(unknown destination)`, `no registrado`, `pos purchase`,
-  ...).
-- `prompt.go` — shows `Merchant:`, `Payment method:` and a redacted
-  description, and repeats the Firefly payee only when it differs.
-- `pipeline.go` — ignores placeholder accounts, and rejects placeholder
-  destinations when looking history up.
+The same assumption - "the payee is a merchant" - was present twice more:
 
-`ParseDescription` never fails: when nothing matches, the merchant is empty and
-every call site falls back to current behaviour, so a bank with no rules behaves
-exactly as it does today.
+- **Destination candidates.** Placeholder accounts were offered to the model as
+  MATCH candidates, so a withdrawal could be filed under `(unknown destination)`.
+  They are now filtered out, and a history-matched destination pointing at one
+  is dropped.
+- **The prompt.** A blank payee caused the raw bank line to be printed in the
+  "Destination:" slot, duplicating the "Description:" line right below it and
+  inviting the model to echo that string back as an account name. The prompt now
+  says the payee was not recorded and asks the model to identify the merchant
+  from the description, in one line instead of two.
 
-| Description | Merchant | Method |
-|---|---|---|
-| `COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : ...9408 EL 2026-10-12` | `AZAHAR NOCHE` | card |
-| `COMPRA BIZUM VENTA BILLETES RENFE ... PEDIDO 000457060982` | `VENTA BILLETES RENFE` | bizum |
-| `TRANSFERENCIA A FAVOR DE LA CUEVA DEL BARBERO CONCEPTO: FACTURA 12` | `LA CUEVA DEL BARBERO` | transfer |
-| `COMPRA EN WWW.AMAZON*WB1R672N5, CON LA TARJETA : ...` | `AMAZON` | card |
+Before:
+
+```
+Transaction to classify:
+  Destination: COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+  Description: COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+  Amount: 42.10
+```
+
+After:
+
+```
+Transaction to classify:
+  Payee: not recorded by the bank — identify the merchant from the description
+  Description: COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+  Amount: 42.10
+```
+
+## Files
+
+| File | |
+|---|---|
+| `internal/classifier/classifier.go` | +30/-8 - generic `IsBlankName`, wider `blankNames` |
+| `internal/classifier/prompt.go` | +10/-7 - payee line, one rule per system prompt |
+| `internal/pipeline/pipeline.go` | +15/-6 - placeholder accounts and history destinations |
+| `internal/classifier/classifier_test.go` | new, 128 lines |
+| `README.md` | +22 - *Payees that are not merchants* |
 
 ## Validation
 
-- `go vet ./...` and `go test ./...`; table tests for the parser, the grouping
-  key and the prompt live beside the code (`merchant_test.go`,
-  `groupkey_test.go`, `prompt_test.go`).
-- **`DRY_RUN=true`** (new env var, default `false`) runs the whole decision path
-  and logs each outcome without writing to Firefly III, so a change like this
-  can be proven against real production data first.
-- `tools/dryrun.py` finds the transactions that expose the bug, prints their
-  state, and can serve an OpenAI-compatible stub endpoint that records every
-  prompt it receives — so prompts can be inspected with no provider spend and
-  no writes.
-- After the dry run, every offending transaction was untouched in Firefly III
-  and the prompts carried e.g. `Merchant: MUNDOLATINO SHELDON` with no card mask
-  and no duplicated date.
+There is no test workflow in this repo, so I ran these on this exact commit
+(Go 1.22):
+
+```
+$ go vet ./...   # clean
+$ go test ./...
+ok  .../internal/classifier  0.006s
+$ go build ./... # clean
+$ docker build . # builds with the repository's Dockerfile
+```
+
+The test file is the repo's first, and uses only the standard library - six
+functions covering the name check (26 placeholder and real-payee cases), the
+regression itself (`GroupKey("(unknown destination)", descA) !=
+GroupKey("(unknown destination)", descB)`), and the shape of the user prompt.
 
 ## Compatibility
 
-- No schema, config-format or API changes; a stored config from before the
-  change loads unchanged.
-- One new optional env var (`DRY_RUN`), and the new tools are opt-in scripts.
-- Two unrelated bugs fixed while wiring this up, either of which may be worth
-  taking on its own:
-  1. an empty stored `base_url` overwrote `OPENAI_BASE_URL` from the environment
-     on a fresh install, so a first boot could not be pointed at a local model;
-  2. `.env` values kept their inline comments, so `TAG_PREFIX=ai  # comment`
-     matched no tags.
+- No config change, no new setting, no new environment variable.
+- Behaviour only differs where the payee is a placeholder; those transactions
+  now group on their description instead of on the placeholder.
+- A real `destination_name` still wins over the description.
 
-## What I am asking for
+## Not in this PR
 
-Take the approach, the code, or neither — I have no stake beyond wanting it to
-live somewhere maintained. I am not offering to maintain a fork of this project
-long-term, so if these parsing rules land upstream they will get the care of a
-real maintainer, and banks with other description formats can contribute their
-rules to one place instead of to a scattering of forks.
+The placeholders themselves could be cleaned up at the source, but that is a
+different trade: either the payee is left empty (the bank's truth) or a merchant
+name is inferred from the description. Inferring it means asking the model for a
+canonical merchant in the same response and caching `description -> merchant`, so
+repeats can skip the call entirely; that is a behaviour change with a small
+per-merchant token cost, so it belongs behind a setting and a separate PR. My
+fork carries a bank-specific parser that does this offline, and it is not
+proposed here: it only knows one bank's format, and the generic fallback above is
+what a shared tool should do.
+
+---
+
+Written with AI assistance; validated against live Firefly III data.

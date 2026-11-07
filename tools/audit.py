@@ -5,13 +5,12 @@ Every request this tool makes is a GET, so it is always safe to run against
 production. It exists to answer three questions about a categorizer's output:
 
   summary       per-month unknown-payee rate, AI tag counts, category spread
-  descriptions  the raw withdrawal descriptions, one per line (pipes straight
-                into `go run ./tools/parsedump`)
+  descriptions  the raw withdrawal descriptions, one per line, for reading
   pairs         description -> (destination_name, category) samples
 
 Usage:
     python3 tools/audit.py summary --months 6
-    python3 tools/audit.py descriptions --months 3 | go run ./tools/parsedump -quiet
+    python3 tools/audit.py descriptions --months 3 | head -40
 
 Credentials are read from the environment, falling back to .env files next to
 the project root. Only FIREFLY_URL and FIREFLY_PERSONAL_TOKEN are required.

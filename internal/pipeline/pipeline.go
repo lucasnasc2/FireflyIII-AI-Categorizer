@@ -127,7 +127,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 		// Placeholder payees such as "(unknown destination)" are not real
 		// merchants. Passing them to the model invites it to MATCH unrelated
 		// withdrawals onto that single fake account.
-		if !classifier.IsUsableAccountName(a.Name) {
+		if classifier.IsBlankName(a.Name) {
 			continue
 		}
 		clAccounts = append(clAccounts, classifier.AccountCandidate{ID: a.ID, Name: a.Name})
@@ -158,7 +158,7 @@ func (p *Pipeline) RunWithOptions(ctx context.Context, j *job.Job, txn firefly.T
 			}
 			// Never re-apply a placeholder payee: doing so would keep
 			// collapsing unrelated merchants onto the same fake account.
-			found = classifier.IsUsableAccountName(a.Name)
+			found = !classifier.IsBlankName(a.Name)
 			break
 		}
 		if !found {

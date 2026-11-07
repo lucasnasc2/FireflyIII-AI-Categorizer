@@ -34,6 +34,7 @@ Rules:
 - Never invent categories
 - When uncertain between two categories, pick the one that is less favorable to the user (conservative default)
 - If the description is too vague to even assume, use NEEDS_REVIEW
+- The payee may be missing or a placeholder. When it is, identify the merchant from the description before deciding
 - Respond ONLY with the JSON object, no markdown, no code fences`
 
 const SystemPromptWithDestination = `You are a bank transaction classifier for a personal finance system.
@@ -76,6 +77,7 @@ Destination account rules:
 - When an existing expense account clearly matches the payee, use MATCH with the exact account name from the list.
 - When you are confident the payee represents a new expense account not in the list, use CREATE with a reasonable, concise account name (e.g. "Amazon", "Netflix", "Delta Airlines"). Prefer the canonical business name.
 - Only set destination to null when the destination_name is truly ambiguous (e.g. generic names like "POS Purchase", "Transfer", or empty).
+- If the payee is missing or a placeholder, identify the merchant from the description and use it for both the category and the destination.
 
 Rules:
 - Never invent categories
@@ -131,65 +133,41 @@ func BuildSystemPrompt(customContext string, destinationMatching bool) string {
 func buildUserPrompt(req Request) string {
 	var sb strings.Builder
 
-	info := ParseDescription(req.Description)
-	merchant := strings.TrimSpace(req.Merchant)
-	if merchant == "" {
-		merchant = info.Merchant
-	}
-	method := strings.TrimSpace(req.Method)
-	if method == "" && info.Method != MethodUnknown {
-		method = string(info.Method)
-	}
-
 	if len(req.History) > 0 {
 		gk := GroupKey(req.DestinationName, req.Description)
 		fmt.Fprintf(&sb, "Past classifications for %q:\n", gk)
 		for _, h := range req.History {
-			fmt.Fprintf(&sb, "  - %q → %s\n", Redact(h.Description), h.CategoryName)
+			fmt.Fprintf(&sb, "  - %q → %s\n", h.Description, h.CategoryName)
 		}
 		sb.WriteString("\n")
 	}
 
-	if accounts := formatAccounts(req.ExpenseAccounts); accounts != "" {
+	if len(req.ExpenseAccounts) > 0 {
 		sb.WriteString("Existing expense accounts:\n")
-		sb.WriteString(accounts)
+		for _, a := range req.ExpenseAccounts {
+			// Skip placeholder accounts like "(no name)".
+			if IsBlankName(a.Name) {
+				continue
+			}
+			fmt.Fprintf(&sb, "  - %s\n", a.Name)
+		}
 		sb.WriteString("\n")
 	}
 
 	fmt.Fprintf(&sb, "Available categories:%s\n\n", formatCategories(req.Categories))
-
 	sb.WriteString("Transaction to classify:\n")
-	if merchant != "" {
-		fmt.Fprintf(&sb, "  Merchant: %s\n", merchant)
+	// A blank placeholder is not a merchant: labelling the raw bank line as the
+	// destination would both duplicate the description and invite the model to
+	// echo it back as an account name.
+	if IsBlankName(req.DestinationName) {
+		sb.WriteString("  Payee: not recorded by the bank — identify the merchant from the description\n")
 	} else {
-		sb.WriteString("  Merchant: unknown — the bank's system did not record a payee\n")
+		fmt.Fprintf(&sb, "  Payee: %s\n", req.DestinationName)
 	}
-	if method != "" {
-		fmt.Fprintf(&sb, "  Payment method: %s\n", method)
-	}
-	fmt.Fprintf(&sb, "  Bank description: %s\n", Redact(req.Description))
+	fmt.Fprintf(&sb, "  Description: %s\n", req.Description)
 	if req.Amount != nil {
 		fmt.Fprintf(&sb, "  Amount: %.2f\n", *req.Amount)
 	}
-	// Only surface the Firefly payee when it adds information the merchant does
-	// not already carry (typically a payee the user corrected by hand).
-	if name := strings.TrimSpace(req.DestinationName); !isBlankName(name) && !strings.EqualFold(name, merchant) {
-		fmt.Fprintf(&sb, "  Payee in Firefly III: %s\n", name)
-	}
 
-	return sb.String()
-}
-
-// formatAccounts renders the usable expense accounts as a list, skipping
-// placeholder accounts such as "(unknown destination)". Offering a placeholder
-// to the model invites it to MATCH unrelated merchants onto one fake account.
-func formatAccounts(accounts []AccountCandidate) string {
-	var sb strings.Builder
-	for _, a := range accounts {
-		if !IsUsableAccountName(a.Name) {
-			continue
-		}
-		fmt.Fprintf(&sb, "  - %s\n", a.Name)
-	}
 	return sb.String()
 }

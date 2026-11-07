@@ -26,25 +26,34 @@ Upstream uses the payee as the key when it looks up similar past transactions to
 
 Measured on my account before the fix: **50.7 % of September and 89.5 % of October withdrawals carried a placeholder payee.** In practice the categoriser was guessing, and the history made the guess look deliberate.
 
-This fork parses the merchant out of the description and keys history on that instead:
+The cause was small: upstream's `isBlankName()` knows `(no name)`, `unknown` and `n/a`, but not `(unknown destination)`. That string was therefore accepted as a merchant name, history was grouped on it, and the category of one shop became the precedent for every other shop.
+
+This fork makes the placeholder check generic, so no bank-specific rules are involved:
 
 | | Upstream | This fork |
 |---|---|---|
-| History key | raw `destination_name`, empty or placeholder for this bank | merchant parsed from the description (`internal/classifier/merchant.go`) plus payment method |
-| Prompt input | the raw bank line | `Merchant:`, `Payment method:` and a redacted description |
-| Placeholder payees | treated as a merchant name | recognised and ignored |
+| Placeholder payees | treated as a merchant name | empty, generic names, `unknown…`, or anything Firefly III wrapped in parentheses are all recognised as "no merchant" |
+| History key | the placeholder, for this bank | the transaction description (what upstream already does for nameless payees) |
+| Prompt input | the raw line, printed twice, once as the "destination" | the raw line once, plus a note that the payee was not recorded and the merchant has to be read from the description |
+| Destination matching | placeholder accounts offered as candidates and re-applied from history | placeholders filtered out, in both directions |
 | Checking a build | not possible without writing to your books | `DRY_RUN=true` classifies, logs, writes nothing |
-| Diagnostics | none | `tools/audit.py`, `tools/dryrun.py`, `tools/parsedump` |
+| Diagnostics | none | `tools/audit.py`, `tools/dryrun.py` |
 | CI | publish only | `go vet` + `go test` gate the publish |
-
-Concrete parse examples — card purchases, Bizum, transfers, and `WWW.AMAZON*WB1R672N5` across its per-purchase variants — are further down in [Merchant parsing](#merchant-parsing).
 
 ### Honest scope
 
-This is tuned to one kind of data: Spanish retail banking that puts the merchant in a free-text description and leaves the payee empty or a placeholder. **If your bank fills `destination_name` properly, upstream already does the right thing and this fork changes nothing for you.** If your bank writes descriptions in a shape the rules in `merchant.go` do not recognise, `ParseDescription` returns an empty merchant and everything falls back to the old behaviour — and you can see what it would extract from your own data before changing anything:
+**If your bank fills `destination_name` properly, upstream already does the right thing and this fork changes nothing for you.** If your bank does not, this fork stops the damage (unrelated merchants no longer share one history bucket) but does not invent a merchant name: the model works from the raw description, exactly as upstream intends for nameless payees.
+
+The trade is calls, not accuracy. Keyed on the placeholder, upstream got no history at all for these transactions, so every one of them cost a model call. Keyed on the description, an exact repeat of the same description can now be recognised — but banks that stamp a date or a reference into every line (mine does) still produce a unique description each time, so most transactions still call the model. The obvious next step is to have the model return a canonical merchant name alongside the category and cache `description → merchant`, behind an opt-in setting, so repeats can skip the call; that is not implemented here.
+
+Two things help you judge it on your own data, both read-only:
 
 ```bash
-python3 tools/audit.py descriptions --months 6 | go run ./tools/parsedump
+# Unknown-payee rate per month, AI tags, category spread
+python3 tools/audit.py summary --months 6
+
+# The individual descriptions, if you want to read them
+python3 tools/audit.py descriptions --months 6 | head -40
 ```
 
 ## How this was built
@@ -52,7 +61,7 @@ python3 tools/audit.py descriptions --months 6 | go run ./tools/parsedump
 Plainly: **with a lot of AI**, and I would rather say so than let you infer something else.
 
 - Mine: the requirement, the investigation into what Openbank actually puts in `description` versus `destination_name`, acceptance testing against my own Firefly III instance, the decision to publish, and every push-back that shaped the code.
-- The AI coding agent's ([Cline](https://cline.bot), running in VS Code): most of `merchant.go`, the classifier and prompt changes, the pipeline wiring, the audit and dry-run tools, the CI workflow and this documentation. It worked in a long loop in which I ran every step and checked the result.
+- The AI coding agent's ([Cline](https://cline.bot), running in VS Code): the classifier, prompt and pipeline changes, the tests, the audit and dry-run tools, the CI workflow and this documentation. It worked in a long loop in which I ran every step and checked the result.
 - Nothing was taken on faith. `go vet` and `go test`, a local Docker build, then `DRY_RUN=true` against the live API with a stub provider so every prompt and every decision could be read while Firefly III stayed untouched, and only then a real run on freshly imported transactions.
 
 Treat it accordingly: well tested against *my* data, lightly tested against anything else. It writes to your accounting records — read the diff first.
@@ -73,7 +82,7 @@ Treat it accordingly: well tested against *my* data, lightly tested against anyt
 
 ## Features
 
-The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer) forked that one and rewrote it from scratch with a new UI and additional features. [This fork](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) adds [merchant-based grouping](#why-this-fork-exists) on top of that and is otherwise the same:
+The original project is [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), whose author archived the project. [openaccountants/firefly-iii-ai-categorize](https://github.com/openaccountants/firefly-iii-ai-categorize) forked it and introduced the three-outcome classification model. [ejagombar/FireflyIII-AI-Categorizer](https://github.com/ejagombar/FireflyIII-AI-Categorizer) forked that one and rewrote it from scratch with a new UI and additional features. [This fork](https://github.com/lucasnasc2/FireflyIII-AI-Categorizer) fixes [history grouped on placeholder payees](#why-this-fork-exists) on top of that and is otherwise the same:
 
 - **Web UI.** A built-in dashboard, styled to match Firefly III's AdminLTE theme with light and dark mode support, provides real-time job monitoring, a transactions browser with manual re-categorisation, a category viewer, a review page for AI decisions, and a full settings page.
 - **Multiple AI providers.** Supports OpenAI (and any OpenAI-compatible endpoint such as Ollama or Azure OpenAI), Google Gemini, and DeepSeek — switchable from the settings page.
@@ -304,7 +313,7 @@ All variables are optional. When they are absent, the server starts normally and
 
 ---
 
-## Merchant parsing
+## Payees that are not merchants
 
 Banks rarely fill in a usable payee. A Spanish card purchase looks like this:
 
@@ -312,31 +321,28 @@ Banks rarely fill in a usable payee. A Spanish card purchase looks like this:
 COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
 ```
 
-Firefly III stores that whole line as the description and leaves `destination_name` empty or set to a placeholder such as `(unknown destination)`. Feeding the raw line to the model wastes tokens (the card mask and the duplicated date are pure noise) and, worse, grouping history on the placeholder makes every unrelated merchant look like the same vendor.
+Firefly III stores that whole line as the description and leaves `destination_name` empty or set to a placeholder such as `(unknown destination)`. Grouping history on that placeholder makes every unrelated merchant look like the same vendor, so the placeholder is first recognised as "no merchant":
 
-Before the model is called, the description is reduced to a merchant name plus a payment method:
+- empty, or one of a short list of generic names (`-`, `n/a`, `no name`, `unknown`, `POS Purchase`, `card purchase`, `purchase`, `transfer`, `no registrado`, …),
+- anything Firefly III wrapped in parentheses — `(unknown destination)`, `(no payee)`, `(sin nombre)` — which is the convention it uses for placeholder accounts,
+- anything mentioning `unknown` or `no name`.
 
-| Description | Merchant | Method |
-|---|---|---|
-| `COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12` | `AZAHAR NOCHE` | card |
-| `COMPRA BIZUM VENTA BILLETES RENFE 2026-08-25 PEDIDO 000457060982` | `VENTA BILLETES RENFE` | bizum |
-| `TRANSFERENCIA A FAVOR DE LA CUEVA DEL BARBERO CONCEPTO: FACTURA 12` | `LA CUEVA DEL BARBERO` | transfer |
-| `COMPRA EN WWW.AMAZON*WB1R672N5, CON LA TARJETA : ...` | `AMAZON` | card |
-| `LA CUEVA DEL BARBERO` | `LA CUEVA DEL BARBERO` | — |
+When a payee is blank, history is keyed on the description (upstream's existing fallback), placeholder accounts are never offered to the model as destination candidates, a destination matched from history is dropped if it points at a placeholder, and the prompt says so plainly:
 
-The same merchant name is used as the key when looking up past classifications, so history stays attached to a vendor instead of to a placeholder. When Firefly III already holds a real payee, that payee is kept.
-
-Two commands check the parser:
-
-```bash
-# Summary of the categorizer's output: unknown-payee rate, AI tags, categories
-python3 tools/audit.py summary --months 6
-
-# Run the parser over your own descriptions
-python3 tools/audit.py descriptions --months 6 | go run ./tools/parsedump
+```
+Transaction to classify:
+  Payee: not recorded by the bank — identify the merchant from the description
+  Description: COMPRA EN AZAHAR NOCHE, SL, CON LA TARJETA : XXXXXXXXXXXX9408 EL 2026-10-12
+  Amount: 42.10
 ```
 
-Both are read-only (GET requests only), so they are safe to run against a live instance.
+A real `destination_name` is never second-guessed: when Firefly III holds an actual merchant, that name keeps winning.
+
+`internal/classifier/classifier_test.go` covers the name check, the regression (two merchants behind one placeholder keep distinct history keys) and the prompt shape; it is the repository's first test file and uses only the standard library.
+
+```bash
+go test ./internal/classifier
+```
 
 ### Validating a build with `DRY_RUN`
 
